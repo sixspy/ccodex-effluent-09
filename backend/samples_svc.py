@@ -7,10 +7,15 @@ from fastapi import APIRouter, HTTPException
 
 from auth import AuthHeader, require_user, require_writer
 from db import connect, now_iso, write_audit
+from limit_policy import (
+    LIMIT_REJECT_ACTION,
+    judge_outfall_limit,
+    outfall_limits,
+    reject_detail,
+)
 from locks import release, require_lock
 from models import SampleIn
 from validators import (
-    adjudicate_exceed,
     metric_summary,
     validate_flow_cap,
     validate_metrics_nonneg,
@@ -117,21 +122,38 @@ def create_sample(body: SampleIn, authorization: AuthHeader = None):
                 raise HTTPException(400, "排放许可不存在")
             if permit["status"] != "有效":
                 raise HTTPException(400, "排放许可未生效")
-            exceeded, metric, measured, limit = adjudicate_exceed(
-                metrics,
-                {
-                    "cod": outfall["cod_limit"],
-                    "nh3n": outfall["nh3n_limit"],
-                    "tp": outfall["tp_limit"],
-                },
-            )
+            # 口限禁入裁决（effluent-09）：仅用排放口本口限值，与许可帽口径分离。
+            # 超口限在任何 INSERT 之前原子拒收——正式采样行零增、超标挂起行零增，
+            # 禁止影子批/先入后驳等折中。
+            verdict = judge_outfall_limit(metrics, outfall_limits(outfall))
+            if verdict["exceeded"]:
+                write_audit(
+                    conn,
+                    user,
+                    LIMIT_REJECT_ACTION,
+                    outfall["outfall_code"],
+                    {
+                        "口限禁入": True,
+                        "reason": reject_detail(verdict, outfall["outfall_code"]),
+                        "exceed_metric": verdict["exceed_metric"],
+                        "measured": verdict["measured"],
+                        "limit_value": verdict["limit_value"],
+                        "permit_ref": body.permit_ref,
+                        "flow_m3h": body.flow_m3h,
+                    },
+                )
+                conn.commit()
+                raise HTTPException(
+                    400, reject_detail(verdict, outfall["outfall_code"])
+                )
             code = body.sample_code or _next_sample_code(conn, body.outfall_id)
             if conn.execute(
                 "SELECT id FROM sample_batches WHERE sample_code=?", (code,)
             ).fetchone():
                 raise HTTPException(400, "采样编号已存在")
-            status = "旁路挂起" if exceeded else "已裁定"
-            adjudicated = None if exceeded else now_iso()
+            # 走到这里的批全部通过口限裁决，正式册只收合规批
+            status = "已裁定"
+            adjudicated = now_iso()
             cur = conn.execute(
                 """INSERT INTO sample_batches(sample_code,outfall_id,permit_ref,metrics,
                    flow_m3h,generation,status,adjudicated_at,created_at)
@@ -149,25 +171,6 @@ def create_sample(body: SampleIn, authorization: AuthHeader = None):
                 ),
             )
             sid = cur.lastrowid
-            hold = None
-            if exceeded:
-                hold_key = f"EX-{code}-{metric}"
-                conn.execute(
-                    """INSERT INTO exceed_holds(sample_id,hold_key,exceed_metric,measured,
-                       limit_value,status,opened_at,note)
-                       VALUES (?,?,?,?,?,?,?,?)""",
-                    (
-                        sid,
-                        hold_key,
-                        metric,
-                        measured,
-                        limit,
-                        "开放",
-                        now_iso(),
-                        "入库自动挂起",
-                    ),
-                )
-                hold = hold_key
             write_audit(
                 conn,
                 user,
@@ -177,7 +180,7 @@ def create_sample(body: SampleIn, authorization: AuthHeader = None):
                     "status": status,
                     "metrics": metrics,
                     "summary": metric_summary(metrics),
-                    "exceed": exceeded,
+                    "exceed": False,
                 },
             )
             conn.commit()
@@ -185,8 +188,8 @@ def create_sample(body: SampleIn, authorization: AuthHeader = None):
                 "id": sid,
                 "sample_code": code,
                 "status": status,
-                "exceed": exceeded,
-                "hold_key": hold,
+                "exceed": False,
+                "hold_key": None,
             }
         finally:
             release(conn, lock_key, user)

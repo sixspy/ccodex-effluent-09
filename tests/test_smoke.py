@@ -34,6 +34,27 @@ def test_sample_exceed_release_seal_flow():
     h = _auth(c)
     outfalls = c.get("/api/outfalls", headers=h).json()["items"]
     of = next(x for x in outfalls if x["outfall_code"] == "OF-E1-A")
+
+    # effluent-09：超口限（COD 62 > 口限 50）正式批原子拒收，不再建挂起批
+    before = len(c.get("/api/samples", headers=h).json()["items"])
+    rejected = c.post(
+        "/api/samples",
+        headers=h,
+        json={
+            "outfall_id": of["id"],
+            "permit_ref": "DP-2026-E01",
+            "sample_code": "SM-FLOW-REJECT",
+            "flow_m3h": 2000,
+            "metrics": {"cod": 62.0, "nh3n": 3.0, "tp": 0.2},
+        },
+    )
+    assert rejected.status_code == 400
+    assert "口限禁入" in rejected.json()["detail"]
+    after = c.get("/api/samples", headers=h).json()["items"]
+    assert len(after) == before
+    assert all(s["sample_code"] != "SM-FLOW-REJECT" for s in after)
+
+    # 合规批正常入正式册
     created = c.post(
         "/api/samples",
         headers=h,
@@ -42,13 +63,15 @@ def test_sample_exceed_release_seal_flow():
             "permit_ref": "DP-2026-E01",
             "sample_code": "SM-FLOW-001",
             "flow_m3h": 2000,
-            "metrics": {"cod": 62.0, "nh3n": 3.0, "tp": 0.2},
+            "metrics": {"cod": 44.0, "nh3n": 3.0, "tp": 0.2},
         },
     ).json()
-    assert created["exceed"] is True
-    assert created["status"] == "旁路挂起"
+    assert created["exceed"] is False
+    assert created["status"] == "已裁定"
+
+    # 挂起批闭环/准排/封批生命周期走夹具预置的超口限挂起批（历史旁路）
     holds = c.get("/api/exceeds?status=开放", headers=h).json()["items"]
-    hold = next(x for x in holds if x["sample_code"] == "SM-FLOW-001")
+    hold = next(x for x in holds if x["sample_code"] == "SM-OF-E1-A-002")
     close = c.post(
         "/api/exceeds/close",
         headers=h,
@@ -56,16 +79,20 @@ def test_sample_exceed_release_seal_flow():
     )
     assert close.status_code == 200
     assert close.json()["sample_adjudicated"] is True
+    seeded = next(
+        s for s in c.get("/api/samples", headers=h).json()["items"]
+        if s["sample_code"] == "SM-OF-E1-A-002"
+    )
     release = c.post(
         "/api/releases",
         headers=h,
-        json={"sample_id": created["id"], "officer": "验收员"},
+        json={"sample_id": seeded["id"], "officer": "验收员"},
     )
     assert release.status_code == 200
-    seal = c.post("/api/seals", headers=h, json={"sample_id": created["id"]})
+    seal = c.post("/api/seals", headers=h, json={"sample_id": seeded["id"]})
     assert seal.status_code == 200
     assert seal.json()["generation"] == 2
-    proof = c.get("/api/proof/sample/SM-FLOW-001", headers=h).json()
+    proof = c.get("/api/proof/sample/SM-OF-E1-A-002", headers=h).json()
     assert proof["released"] is True
     assert proof["sealed"] is True
 

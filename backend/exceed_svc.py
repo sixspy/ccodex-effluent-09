@@ -53,18 +53,13 @@ def open_exceed(body: ExceedOpenIn, authorization: AuthHeader = None):
             import json
 
             metrics = json.loads(sample["metrics"] or "{}")
-            from validators import adjudicate_exceed
+            from limit_policy import judge_outfall_limit, outfall_limits
 
-            exceeded, metric, measured, limit = adjudicate_exceed(
-                metrics,
-                {
-                    "cod": sample["cod_limit"],
-                    "nh3n": sample["nh3n_limit"],
-                    "tp": sample["tp_limit"],
-                },
-            )
-            if not exceeded:
+            # 超标页挂起裁决与采样入库共用同一口限出处，禁止双口径
+            verdict = judge_outfall_limit(metrics, outfall_limits(sample))
+            if not verdict["exceeded"]:
                 raise HTTPException(400, "当前指标未超标，无需挂起")
+            metric = verdict["exceed_metric"]
             hold_key = f"EX-{sample['sample_code']}-{metric}-M"
             conn.execute(
                 """INSERT INTO exceed_holds(sample_id,hold_key,exceed_metric,measured,

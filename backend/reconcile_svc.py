@@ -6,6 +6,11 @@ import json
 from fastapi import APIRouter, HTTPException
 
 from auth import AuthHeader, require_user
+from limit_policy import (
+    LIMIT_REJECT_REASON,
+    judge_outfall_limit,
+    outfall_limits,
+)
 from validators import validate_permit_match
 
 router = APIRouter(tags=["reconcile"])
@@ -40,17 +45,25 @@ def _reconcile_permit(conn, permit_code: str) -> dict:
     permit = conn.execute(
         "SELECT * FROM discharge_permits WHERE permit_code=?", (permit_code,)
     ).fetchone()
-    samples = conn.execute(
-        """SELECT sample_code, flow_m3h, metrics, status, generation FROM sample_batches
-           WHERE permit_ref=? AND status NOT IN ('作废')""",
+    # 联排放口取本口限值：对账剔除与采样口限裁决必须同源，
+    # 不得用许可帽（permit.*_cap）替代口限比较。
+    rows = conn.execute(
+        """SELECT s.sample_code, s.flow_m3h, s.metrics, s.status, s.generation,
+                  s.outfall_id, o.outfall_code, o.cod_limit, o.nh3n_limit, o.tp_limit
+           FROM sample_batches s
+           JOIN outfalls o ON o.id=s.outfall_id
+           WHERE s.permit_ref=? AND s.status NOT IN ('作废')
+           ORDER BY s.id""",
         (permit_code,),
     ).fetchall()
-    if not samples:
+    if not rows:
         return {
             "permit_code": permit_code,
             "balanced": False,
             "reason": "无采样批次",
             "samples": [],
+            "excluded_samples": [],
+            "total_flow_m3h": 0.0,
         }
     caps = {
         "cod": permit["cod_cap"],
@@ -58,14 +71,32 @@ def _reconcile_permit(conn, permit_code: str) -> dict:
         "tp": permit["tp_cap"],
     }
     details = []
+    excluded = []
+    total_flow = 0.0
     all_ok = True
-    for s in samples:
+    for s in rows:
         metrics = json.loads(s["metrics"] or "{}")
+        verdict = judge_outfall_limit(metrics, outfall_limits(s))
+        if verdict["exceeded"]:
+            # 超口限批剔除：不进对账明细、不累计流量，只留口限禁入痕
+            excluded.append(
+                {
+                    "sample_code": s["sample_code"],
+                    "outfall_code": s["outfall_code"],
+                    "reason": LIMIT_REJECT_REASON,
+                    "exceed_metric": verdict["exceed_metric"],
+                    "measured": verdict["measured"],
+                    "limit_value": verdict["limit_value"],
+                    "flow_m3h": s["flow_m3h"],
+                }
+            )
+            continue
         ok = validate_permit_match(
             caps, metrics, float(s["flow_m3h"]), float(permit["quota_m3d"])
         )
         if not ok:
             all_ok = False
+        total_flow += float(s["flow_m3h"])
         details.append(
             {
                 "sample_code": s["sample_code"],
@@ -90,6 +121,9 @@ def _reconcile_permit(conn, permit_code: str) -> dict:
         "proof_ready": all_ok and len(seal_rows) >= 1,
         "seal_count": len(seal_rows),
         "samples": details,
+        "excluded_samples": excluded,
+        "excluded_count": len(excluded),
+        "total_flow_m3h": total_flow,
         "seals": [dict(x) for x in seal_rows],
     }
 

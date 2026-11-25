@@ -81,6 +81,10 @@ createApp({
     const sealableSamples = computed(() =>
       samples.value.filter((s) => ["已裁定", "已准排"].includes(s.status))
     );
+    // 采样页联动排放口页同源口限灯
+    const selectedOutfall = computed(() =>
+      outfalls.value.find((o) => o.id === Number(sampleForm.value.outfall_id)) || null
+    );
 
     function statusClass(s) {
       if (!s) return "muted";
@@ -223,6 +227,7 @@ createApp({
       reconOne, reconAllItems, proofOne, reconCode, proofCode,
       plantForm, outfallForm, sampleForm, releaseForm, sealForm, permitForm,
       lineageForm, labForm, sludgeForm, releasableSamples, sealableSamples,
+      selectedOutfall,
       login, logout, refresh, statusClass, sampleClass, fmtMetrics,
       loadPlant, loadSample, createPlant, createOutfall, createSample,
       closeExceed, createRelease, createSeal, createPermit, createLineage,

@@ -35,6 +35,13 @@ export const samplesViewTemplate = `
         <div><label>流量 m3/h</label><input type="number" v-model.number="sampleForm.flow_m3h"/></div>
       </div>
       <label>编号（可空自动）</label><input v-model="sampleForm.sample_code"/>
+      <div v-if="selectedOutfall && selectedOutfall.limit_alarm" class="banner err">
+        {{ selectedOutfall.outfall_code }} 口限红灯：{{ selectedOutfall.alarm_metric }}
+        实测 {{ selectedOutfall.latest_cod }} 超口限，超口限批将被原子拒收（正式册零增）。
+      </div>
+      <p class="muted" style="font-size:0.8rem">
+        入库仅按排放口本口限值裁决；任一指标超口限即拒写正式批并留“口限禁入”审计，不建影子批。
+      </p>
       <div class="actions"><button @click="createSample">入库</button></div>
     </div>
   </div>`;

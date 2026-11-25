@@ -36,12 +36,16 @@ def get_plant(plant_id: int, authorization: AuthHeader = None):
         outfalls = conn.execute(
             "SELECT * FROM outfalls WHERE plant_id=? ORDER BY id", (plant_id,)
         ).fetchall()
+        # 处理厂页口限告警条复用排放口页同一裁决与同一限值字段
+        from outfalls_svc import _attach_limit_alarm
+
+        outfall_items = [_attach_limit_alarm(conn, dict(o)) for o in outfalls]
         permits = conn.execute(
             "SELECT * FROM discharge_permits WHERE plant_id=? ORDER BY id", (plant_id,)
         ).fetchall()
         return {
             "plant": dict(row),
-            "outfalls": [dict(o) for o in outfalls],
+            "outfalls": outfall_items,
             "permits": [dict(p) for p in permits],
         }
 

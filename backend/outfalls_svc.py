@@ -1,13 +1,28 @@
 """排放口限值与开放态。"""
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, HTTPException
 
 from auth import AuthHeader, require_user, require_writer
 from db import connect, now_iso, write_audit
+from limit_policy import alarm_for_outfall, outfall_limits
 from models import OutfallIn
 
 router = APIRouter(tags=["outfalls"])
+
+
+def _attach_limit_alarm(conn, outfall: dict) -> dict:
+    """排放口页红灯：最新批实测超本口限即亮，裁决与采样/对账同源。"""
+    row = conn.execute(
+        """SELECT metrics FROM sample_batches WHERE outfall_id=?
+           ORDER BY id DESC LIMIT 1""",
+        (outfall["id"],),
+    ).fetchone()
+    latest = json.loads(row["metrics"]) if row and row["metrics"] else None
+    outfall.update(alarm_for_outfall(latest, outfall_limits(outfall)))
+    return outfall
 
 
 @router.get("/api/outfalls")
@@ -25,7 +40,7 @@ def list_outfalls(authorization: AuthHeader = None, plant_id: int | None = None)
                 """SELECT o.*, p.plant_code, p.name plant_name FROM outfalls o
                    JOIN plants p ON p.id=o.plant_id ORDER BY o.id"""
             ).fetchall()
-        return {"items": [dict(r) for r in rows]}
+        return {"items": [_attach_limit_alarm(conn, dict(r)) for r in rows]}
 
 
 @router.get("/api/outfalls/{outfall_id}")
@@ -39,12 +54,13 @@ def get_outfall(outfall_id: int, authorization: AuthHeader = None):
         ).fetchone()
         if not row:
             raise HTTPException(404, "排放口不存在")
+        data = _attach_limit_alarm(conn, dict(row))
         recent = conn.execute(
             """SELECT sample_code, status, flow_m3h, created_at FROM sample_batches
                WHERE outfall_id=? ORDER BY id DESC LIMIT 10""",
             (outfall_id,),
         ).fetchall()
-        return {"outfall": dict(row), "recent_samples": [dict(s) for s in recent]}
+        return {"outfall": data, "recent_samples": [dict(s) for s in recent]}
 
 
 @router.post("/api/outfalls")

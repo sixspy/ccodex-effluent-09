@@ -27,6 +27,19 @@ export const plantsViewTemplate = `
           <span>排放口</span><span>{{ plantDetail.outfalls.length }}</span>
           <span>许可</span><span>{{ plantDetail.permits.length }}</span>
         </div>
+        <table style="margin-top:0.6rem">
+          <thead><tr><th>排放口</th><th>COD 限</th><th>氨氮限</th><th>总磷限</th><th>口限告警条</th></tr></thead>
+          <tbody>
+            <tr v-for="o in plantDetail.outfalls" :key="o.id">
+              <td>{{ o.outfall_code }}</td>
+              <td>{{ o.cod_limit }}</td><td>{{ o.nh3n_limit }}</td><td>{{ o.tp_limit }}</td>
+              <td>
+                <span v-if="o.limit_alarm" class="fail">红灯 · {{ o.alarm_metric }} 超口限（最新 {{ o.latest_cod }}）</span>
+                <span v-else class="pass">正常</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
   </div>`;
